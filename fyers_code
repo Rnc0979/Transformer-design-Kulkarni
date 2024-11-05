@@ -1,0 +1,376 @@
+import time
+from datetime import datetime, timedelta, time as dt_time
+import pytz
+import requests
+from fyers_apiv3.FyersWebsocket import data_ws
+from fyers_apiv3 import fyersModel
+import logging
+import pandas as pd
+import urllib.parse
+
+symbol=["NSE:NIFTY24NOVFUT"]
+symbol[0]
+user_date_input = '2024-11-07'
+
+#look for option symbol backtest
+difference_4th=50 #set manually aswell
+
+
+message_id_fetch = '652'
+def telegramsend(message_text, message_id_to_edit):
+    global bot_token, chat_id
+    url = f"https://api.telegram.org/bot{bot_token}/editMessageText?chat_id={chat_id}&message_id={message_id_to_edit}&text={message_text}"
+    requests.get(url)
+
+def fetch_access_token():
+    # Get the latest message from Telegram
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    response = requests.get(url).json()
+
+
+    auth_code = urllib.parse.parse_qs(urllib.parse.urlparse(response['result'][-1]['edited_message']['text']).query).get('auth_code', [None])[0]
+    
+    
+    message_id_fetch=(response['result'][-1]['edited_message']['text'])
+    # Create session and generate token
+    session = fyersModel.SessionModel(client_id=client_id, secret_key=secret_key, redirect_uri=redirect_uri, response_type=response_type, grant_type=grant_type)
+    session.set_token(auth_code)
+    access_token = session.generate_token()['access_token']
+    return access_token
+
+access_token =" 122()"
+telegramsend(access_token, message_id_fetch)
+
+
+
+kolkata_tz = pytz.timezone('Asia/Kolkata')
+today = datetime.now(kolkata_tz).date()
+start_time = kolkata_tz.localize(datetime.combine(today, dt_time(9, 30)))
+end_time = kolkata_tz.localize(datetime.combine(today, dt_time(9, 30)))
+
+start_timestamp = int(start_time.timestamp())
+end_timestamp = int(end_time.timestamp())
+##dowload data
+data = {
+    "symbol": 'NSE:NIFTY24OCTFUT',  # Your stock symbol
+    "resolution": "5",  # 5-minute interval to capture the time window
+    "date_format": "0",  # UNIX timestamp format
+    "range_from": str(start_timestamp),  
+    "range_to": str(end_timestamp),      
+    "cont_flag": "1"
+}
+
+fyers2 = fyersModel.FyersModel(client_id=client_id, is_async=False, token=access_token, log_path="")
+
+india_tz = pytz.timezone('Asia/Kolkata')
+
+
+ltp=None
+exch_time=None
+open_price, high_price, low_price, close_price= None,None,None,None
+
+def convert_to_ist(epoch_time):
+    utc_time = datetime.fromtimestamp(epoch_time, tz=pytz.utc)
+    ist_time = utc_time + timedelta(hours=5, minutes=30)
+    return ist_time
+
+#---------------------------------------------------------------------------------------------------
+
+
+def get_option_symbol(side, user_date_input, option_type, strike_step=50):     
+    fyers = fyersModel.FyersModel(client_id=client_id, token=access_token,is_async=False, log_path="")
+
+    data_quotes = {
+        "symbols":'NSE:NIFTY50-INDEX'
+    }
+
+    response_data_quotes = fyers.quotes(data=data_quotes)
+    index_price = response_data_quotes['d'][0]['v']['lp']
+    
+    
+    def is_last_thursday(date):       
+        next_week = date + timedelta(days=7)
+        return next_week.month != date.month    
+    user_date = datetime.strptime(user_date_input, '%Y-%m-%d').date()    
+    
+    if is_last_thursday(user_date):
+        expiry_format = user_date.strftime('%y') + user_date.strftime('%b').upper()  # Last Thursday format
+    else:
+        if user_date.month == 10:
+            expiry_format = user_date.strftime('%y') + 'O' + user_date.strftime('%d')  # October
+        elif user_date.month == 11:
+            expiry_format = user_date.strftime('%y') + 'N' + user_date.strftime('%d')  # November
+        elif user_date.month == 12:
+            expiry_format = user_date.strftime('%y') + 'D' + user_date.strftime('%d')  # December
+        else:
+            expiry_format = user_date.strftime('%y') + user_date.strftime('%m').lstrip('0') + user_date.strftime('%d')
+            
+
+    
+    strike_price = round(index_price / strike_step) * strike_step
+    if option_type=='CE':
+        strike_price=strike_price-50
+    else: 
+        strike_price=strike_price+50
+    
+    if option_type not in ['CE', 'PE']:
+        raise ValueError("Option type must be 'CE' or 'PE'")
+    
+    option_symbol = f"NSE:NIFTY{expiry_format}{strike_price}{option_type}"
+    
+    print(option_symbol)    
+    
+
+    data_order = {
+        "symbol": option_symbol,
+        "qty": 25,
+        "type": 2,  # Market order
+        "side": side,
+        "productType": "BO",
+        "limitPrice": 0,
+        "stopLoss": round(difference_4th_bar * 0.8),
+        "takeProfit": 40,
+        "validity": "DAY",
+        "disclosedQty": 0,
+        "offlineOrder": False,        
+    }
+    response_order = fyers.place_order(data=data_order)
+    print('order_placed')
+    print(response_order)
+    
+    
+
+
+
+
+# ------------------------------------------------
+def analyze_bars(df):
+    for date, group in df.groupby(df.index.date):
+        bars = group.sort_index()
+        
+        if len(bars) < 4:
+            continue
+        
+        valid = True
+        for i in range(1, 4):
+            prev_bar = bars.iloc[i-1]
+            curr_bar = bars.iloc[i]
+            
+            if curr_bar['close'] > prev_bar['open'] and curr_bar['close'] < prev_bar['close']:
+                telegramsend(f"!!!!!!Nop !!!! Not Good!!!! Nop!!!!!No good looking structure {today}", message_id1)
+                valid = False
+                break
+            
+            if prev_bar['close'] > prev_bar['open']:
+                if curr_bar['close'] > curr_bar['open']:
+                    if curr_bar['close'] <= prev_bar['close']:
+                        telegramsend(f"!!!!!!Nop !!!! Not Good!!!! Nop!!!!!No good looking structure {today}", message_id1)
+                        valid = False
+                        break
+                else:
+                    if curr_bar['close'] >= prev_bar['open']:
+                        telegramsend(f"!!!!!!Nop !!!! Not Good!!!! Nop!!!!!No good looking structure {today}", message_id1)
+                        valid = False
+                        break
+            else:
+                if curr_bar['close'] > curr_bar['open']:
+                    if curr_bar['close'] <= prev_bar['open']:
+                        telegramsend(f"!!!!!!Nop !!!! Not Good!!!! Nop!!!!!No good looking structure {today}", message_id1)
+                        valid = False
+                        break
+                else:
+                    if curr_bar['close'] >= prev_bar['close']:
+                        telegramsend(f"!!!!!!Nop !!!! Not Good!!!! Nop!!!!!No good looking structure {today}", message_id1)
+                        valid = False
+                        break
+        
+        if valid:
+            telegramsend(f"Good looking structure, closses are not Inside{today}", message_id1)            
+    return None
+# ------------------------------------------------
+def main():
+    global open_price, high_price, low_price, close_price, difference_4th_bar
+    response = fyers2.history(data=data)
+    open_price = response['candles'][0][1]
+    high_price = response['candles'][0][2]
+    low_price = response['candles'][0][3]
+    close_price = response['candles'][0][4]
+    difference_4th_bar = high_price - low_price
+    print(f"Open: {open_price}, High: {high_price}, Low: {low_price}, Close: {close_price}, Difference: {difference_4th_bar}")
+    return response
+
+# analysis anď comment of first four bar
+
+def main_analysis():
+    kolkata_tz = pytz.timezone('Asia/Kolkata')
+    today = datetime.now(kolkata_tz).date()
+    start_time_ = kolkata_tz.localize(datetime.combine(today, dt_time(9, 15)))
+    end_time_ = kolkata_tz.localize(datetime.combine(today, dt_time(9, 30)))
+
+    start_timestamp_ = int(start_time_.timestamp())
+    end_timestamp_ = int(end_time_.timestamp())
+    ##dowload data
+    data_analysis = {
+    "symbol": 'NSE:NIFTY50-INDEX',  # Your stock symbol
+    "resolution": "5",  # 5-minute interval to capture the time window
+    "date_format": "0",  # UNIX timestamp format
+    "range_from": str(start_timestamp_),  
+    "range_to": str(end_timestamp_),      
+    "cont_flag": "1"}
+    return data_analysis
+
+
+
+a="09:35:00"
+b="15:29:00"
+last_minute=None
+stop_loss = None
+target = None
+entry_price = None
+max_trades = 2
+trade_count = 0
+trade_executed = False
+max_retries = 5
+retry_delay = 2
+last_trade=None
+main_executed = False
+
+logging.basicConfig(level=logging.INFO)
+
+def onmessage(message):
+    global main_executed, last_minute, ltp, exch_time, trade_executed, stop_loss, target, entry_price, trade_count, a, last_trade
+    
+    exch_time = convert_to_ist(message['exch_feed_time'])    
+    ltp = message['ltp']
+    current_minute = exch_time.strftime('%Y-%m-%d %H:%M')
+
+    if not main_executed and exch_time.time() >= datetime.strptime(a, "%H:%M:%S").time():
+        main()
+        response_analysis = fyers2.history(data=main_analysis())
+        data = response_analysis['candles']
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+        ist = pytz.timezone('Asia/Kolkata')
+        df['timestamp'] = df['timestamp'].dt.tz_convert(ist)
+        df.set_index('timestamp', inplace=True)
+        print(df)        
+        analyze_bars(df)
+        main_executed=True
+
+    if last_minute is None or current_minute != last_minute:
+        telegramsend(exch_time,message_id)
+        last_minute = current_minute
+        
+
+    if exch_time.time() >= datetime.strptime(b, "%H:%M:%S").time():
+        fyers.close_connection()
+
+    if exch_time.time() >= datetime.strptime(a, "%H:%M:%S").time():   
+        
+        if not trade_executed and trade_count < max_trades and difference_4th_bar < difference_4th:
+            if ltp > high_price+2 and last_trade != 'buy':
+                # Trigger buy trade
+                entry_price = ltp
+                stop_loss = low_price - 2
+                target = entry_price + 30
+                get_option_symbol(1, user_date_input, 'CE')  # Fetch Call option
+                trade_executed = True
+                trade_count += 1
+                last_trade = 'buy'
+                logging.info(f"Buy trade executed at {entry_price}, SL: {stop_loss}, Target: {target}")
+
+            elif ltp < low_price-2 and last_trade != 'sell':
+                # Trigger sell trade
+                entry_price = ltp
+                stop_loss = high_price + 2
+                target = entry_price - 30
+                get_option_symbol(1, user_date_input, 'PE')  # Fetch Put option
+                trade_executed = True
+                trade_count += 1
+                last_trade = 'sell'
+                logging.info(f"Sell trade executed at {entry_price}, SL: {stop_loss}, Target: {target}")
+
+        if trade_executed:
+            if last_trade == 'buy':
+                # Check for Buy trade conditions
+                if ltp <= stop_loss:
+                    logging.info(f"Buy trade: Stop-loss hit at {ltp}. Exiting trade.")
+                    trade_executed = False
+                    stop_loss, target, entry_price = None, None, None
+
+                elif ltp >= target:
+                    logging.info(f"Buy trade: Target hit at {ltp}. Exiting trade.")
+                    trade_executed = False
+                    stop_loss, target, entry_price = None, None, None
+
+            elif last_trade == 'sell':
+                # Check for Sell trade conditions
+                if ltp >= stop_loss:
+                    logging.info(f"Sell trade: Stop-loss hit at {ltp}. Exiting trade.")
+                    trade_executed = False
+                    stop_loss, target, entry_price = None, None, None
+
+                elif ltp <= target:
+                    logging.info(f"Sell trade: Target hit at {ltp}. Exiting trade.")
+                    trade_executed = False
+                    stop_loss, target, entry_price = None, None, None
+    
+    
+    return ltp
+# -------------------------------------------------------------------------------------------
+def onerror(message):
+    logging.error(f"Error encountered: {message}")
+    # reconnect_websocket()
+
+def onclose(message):
+    logging.warning(f"Connection closed: {message}")
+    # reconnect_websocket()
+
+def onopen():
+    logging.info("WebSocket connection established")
+    data_type = "SymbolUpdate"    
+    fyers.subscribe(symbols=symbol, data_type=data_type)
+
+def reconnect_websocket():
+    """Handle reconnection logic with retry and exponential backoff."""
+    global max_retries, retry_delay
+    retries = 0
+    
+    while retries < max_retries:
+        try:
+            logging.info(f"Attempting to reconnect, try {retries + 1}/{max_retries}")
+            fyers.connect()  # Attempt to reconnect
+            fyers.keep_running()  # Ensure the WebSocket connection remains active
+            logging.info("Reconnection successful!")
+            break  # Break the loop if reconnection is successful
+        except Exception as e:
+            logging.error(f"Reconnection attempt {retries + 1} failed: {str(e)}")
+            retries += 1
+            time.sleep(retry_delay)  # Wait before retrying
+            retry_delay *= 2  # Exponentially increase delay (e.g., 2s -> 4s -> 8s, etc.)
+    
+    if retries >= max_retries:
+        logging.error("Max reconnection attempts reached. Could not reconnect.")
+fyers = data_ws.FyersDataSocket( access_token=access_token,log_path="",litemode=False,write_to_file=False,reconnect=True,on_connect=onopen,on_close=onclose,on_error=onerror,on_message=onmessage)
+
+# -------------------------------------------------------------------------------------------
+
+def wait_until_start_time(target_time):    
+    while True:
+        now = datetime.now(kolkata_tz).time()  # Get current time in IST
+        if now >= target_time:
+            logging.info(f"Starting process at {now}")
+            break
+        else:
+            logging.info(f"Current time is {now}. Waiting for 9:16 AM...")
+            time.sleep(60)
+
+
+start_time = datetime.strptime("09:16", "%H:%M").time()
+wait_until_start_time(start_time)
+
+try:
+    fyers.connect()
+    fyers.keep_running()
+except Exception as e:
+    logging.error(f"Initial connection failed: {str(e)}")
